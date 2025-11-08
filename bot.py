@@ -85,7 +85,7 @@ class VoiceTimeBot(discord.Client):
         print(f'📊 {len(self.user_voice_time)} utilisateurs suivis')
         
         # Mettre le statut
-        activity = discord.Activity(type=discord.ActivityType.watching, name="le temps en vocal 🎧")
+        activity = discord.Activity(type=discord.ActivityType.watching, name="Je nahess ma Fwew 🎧")
         await self.change_presence(activity=activity)
         
         # Tâche de sauvegarde automatique
