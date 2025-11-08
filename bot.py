@@ -14,6 +14,7 @@ class VoiceTimeBot(discord.Client):
         super().__init__(intents=intents)
         self.user_voice_time = {}
         self.voice_join_time = {}
+        self.bot_voice_channel = None
         self.load_data()
 
     def save_data(self):
@@ -46,7 +47,10 @@ class VoiceTimeBot(discord.Client):
 
     async def on_voice_state_update(self, member, before, after):
         """Gère les connexions/déconnexions vocales"""
-        # Ignorer les mute/déafen
+        # Ignorer les mute/déafen et le bot lui-même
+        if member == self.user:
+            return
+            
         if before.channel == after.channel:
             return
             
@@ -99,7 +103,13 @@ class VoiceTimeBot(discord.Client):
         if message.author == self.user:
             return
 
-        if message.content.startswith('!temps'):
+        if message.content.startswith('!join'):
+            await self.cmd_join(message)
+
+        elif message.content.startswith('!leave'):
+            await self.cmd_leave(message)
+
+        elif message.content.startswith('!temps'):
             await self.cmd_temps(message)
 
         elif message.content.startswith('!classement'):
@@ -107,6 +117,35 @@ class VoiceTimeBot(discord.Client):
             
         elif message.content.startswith('!help'):
             await self.cmd_help(message)
+
+    async def cmd_join(self, message):
+        """Commande !join - Faire rejoindre le bot en vocal"""
+        if message.author.voice and message.author.voice.channel:
+            channel = message.author.voice.channel
+            try:
+                # Déconnecter si déjà connecté ailleurs
+                if self.bot_voice_channel:
+                    await self.bot_voice_channel.disconnect()
+                
+                # Rejoindre le canal
+                self.bot_voice_channel = await channel.connect()
+                await message.channel.send(f"🎧 Bot connecté dans **{channel.name}** et reste en permanence !")
+                print(f"🤖 Bot rejoint le vocal: {channel.name}")
+                
+            except Exception as e:
+                await message.channel.send(f"❌ Erreur: {e}")
+        else:
+            await message.channel.send("❌ Vous devez être dans un salon vocal !")
+
+    async def cmd_leave(self, message):
+        """Commande !leave - Faire quitter le bot du vocal"""
+        if self.bot_voice_channel:
+            await self.bot_voice_channel.disconnect()
+            self.bot_voice_channel = None
+            await message.channel.send("🚪 Bot déconnecté du vocal")
+            print("🤖 Bot quitté du vocal")
+        else:
+            await message.channel.send("❌ Le bot n'est dans aucun vocal")
 
     async def cmd_temps(self, message):
         """Commande !temps"""
@@ -144,11 +183,13 @@ class VoiceTimeBot(discord.Client):
         """Commande !help"""
         help_text = """
 **🎧 Commandes du Bot Vocal:**
+`!join` - Faire rejoindre le bot dans votre vocal (reste en permanence)
+`!leave` - Faire quitter le bot du vocal
 `!temps` - Voir votre temps total en vocal
 `!classement` - Voir le top 10 des temps vocaux
 `!help` - Affiche ce message
 
-Le bot track automatiquement votre temps passé en vocal !
+💡 **Astuce:** Utilisez `!join` pour que le bot reste en vocal 24h/24 et fasse monter les heures !
         """
         await message.channel.send(help_text)
 
