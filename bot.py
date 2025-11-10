@@ -3,6 +3,30 @@ import asyncio
 import os
 import json
 from datetime import datetime, timedelta
+from flask import Flask
+from threading import Thread
+
+# ================= SERVEUR WEB POUR RESTER ACTIF =================
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "🤖 Bot Vocal 24/24/365 - TOUJOURS ACTIF!"
+
+@app.route('/ping')
+def ping():
+    return "pong"
+
+def run_web():
+    app.run(host='0.0.0.0', port=8080)
+
+# Démarrer le serveur web
+print("🌐 Lancement du serveur web...")
+web_thread = Thread(target=run_web)
+web_thread.daemon = True
+web_thread.start()
+
+# ================= BOT VOCAL 24/24/365 =================
 
 intents = discord.Intents.default()
 intents.voice_states = True
@@ -15,10 +39,13 @@ class VoiceTimeBot(discord.Client):
         self.user_voice_time = {}
         self.voice_join_time = {}
         self.bot_voice_channel = None
+        self.target_channel_id = None
+        self.last_connect_time = None
         self.load_data()
+        print("🤖 Bot vocal initialisé - Prêt pour 24/24!")
 
     def save_data(self):
-        """Sauvegarde les données dans un fichier JSON"""
+        """Sauvegarde les données"""
         try:
             save_data = {}
             for user_id, timedelta_obj in self.user_voice_time.items():
@@ -26,40 +53,133 @@ class VoiceTimeBot(discord.Client):
             
             with open('voice_data.json', 'w') as f:
                 json.dump(save_data, f)
-            print("💾 Données sauvegardées avec succès")
+            print("💾 Données sauvegardées")
         except Exception as e:
             print(f"❌ Erreur sauvegarde: {e}")
 
     def load_data(self):
-        """Charge les données depuis le fichier JSON"""
+        """Charge les données"""
         try:
             with open('voice_data.json', 'r') as f:
                 data = json.load(f)
                 for user_id, seconds in data.items():
                     self.user_voice_time[int(user_id)] = timedelta(seconds=seconds)
-            print(f"📂 Données chargées: {len(self.user_voice_time)} utilisateurs")
+            print(f"📂 {len(self.user_voice_time)} utilisateurs chargés")
         except FileNotFoundError:
-            print("📂 Aucune donnée trouvée, démarrage frais")
+            print("📂 Démarrage frais - Nouveau fichier de données")
             self.user_voice_time = {}
         except Exception as e:
             print(f"❌ Erreur chargement: {e}")
-            self.user_voice_time = {}
+
+    async def on_ready(self):
+        print(f'✅ BOT CONNECTÉ: {self.user}')
+        print(f'👥 Serveurs: {len(self.guilds)}')
+        
+        # Statut
+        activity = discord.Activity(type=discord.ActivityType.watching, name="🎧 Vocal 24/24/365")
+        await self.change_presence(activity=activity)
+        
+        # CONNEXION AUTOMATIQUE IMMÉDIATE
+        await self.auto_connect_to_voice()
+        
+        # Tâches background
+        self.loop.create_task(self.auto_save())
+        self.loop.create_task(self.connection_watcher())
+        self.loop.create_task(self.time_accumulator())
+
+    async def auto_connect_to_voice(self):
+        """Se connecte automatiquement à un salon vocal"""
+        print("🔍 Recherche d'un salon vocal...")
+        
+        for guild in self.guilds:
+            print(f"🏠 Serveur: {guild.name}")
+            for channel in guild.voice_channels:
+                print(f"   🎧 Salon: {channel.name}")
+                try:
+                    # Se connecter au premier salon vocal disponible
+                    self.bot_voice_channel = await channel.connect()
+                    self.target_channel_id = channel.id
+                    self.last_connect_time = datetime.now()
+                    
+                    print(f"🎧✅ CONNECTÉ à: {channel.name}")
+                    print("🤖 JE RESTE DANS LE VOCAL 24H/24 MAINTENANT !")
+                    print("⏰ Cumul d'heures COMMENCÉ !")
+                    return
+                    
+                except Exception as e:
+                    print(f"❌ Impossible {channel.name}: {e}")
+                    continue
+        
+        print("⚠️ Aucun salon vocal trouvé - Attente manuelle !join")
+
+    async def connection_watcher(self):
+        """Surveille la connexion vocale en permanence"""
+        await self.wait_until_ready()
+        
+        while not self.is_closed():
+            try:
+                # Vérifier si déconnecté
+                if not self.bot_voice_channel or not self.bot_voice_channel.is_connected():
+                    print("🔁 DÉCONNEXION DÉTECTÉE - Reconnexion immédiate...")
+                    await self.auto_connect_to_voice()
+                else:
+                    # Vérifier la stabilité
+                    duration = datetime.now() - self.last_connect_time if self.last_connect_time else timedelta(0)
+                    hours = duration.total_seconds() / 3600
+                    if hours > 1:  # Toutes les heures, log la durée
+                        print(f"⏱️ Connexion stable depuis: {hours:.1f} heures")
+                        
+            except Exception as e:
+                print(f"❌ Erreur surveillant: {e}")
+                
+            await asyncio.sleep(30)  # Vérifie toutes les 30 secondes
+
+    async def time_accumulator(self):
+        """Cumule du temps pour le bot (simulation d'activité)"""
+        await self.wait_until_ready()
+        
+        while not self.is_closed():
+            try:
+                # Le bot cumule du temps pour lui-même
+                bot_id = self.user.id
+                if self.bot_voice_channel and self.bot_voice_channel.is_connected():
+                    if bot_id in self.user_voice_time:
+                        self.user_voice_time[bot_id] += timedelta(seconds=60)  # +1 minute
+                    else:
+                        self.user_voice_time[bot_id] = timedelta(seconds=60)
+                    
+                    # Log toutes les heures
+                    total_seconds = self.user_voice_time[bot_id].total_seconds()
+                    if total_seconds % 3600 < 60:  # Toutes les heures
+                        hours = int(total_seconds // 3600)
+                        print(f"📈 Temps cumulé: {hours} heures")
+                        
+            except Exception as e:
+                print(f"❌ Erreur accumulateur: {e}")
+                
+            await asyncio.sleep(60)  # Toutes les 60 secondes
+
+    async def auto_save(self):
+        """Sauvegarde automatique toutes les 5 minutes"""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            await asyncio.sleep(300)  # 5 minutes
+            self.save_data()
 
     async def on_voice_state_update(self, member, before, after):
-        """Gère les connexions/déconnexions vocales"""
-        # Ignorer les mute/déafen et le bot lui-même
-        if member == self.user:
+        """Track le temps des utilisateurs réels"""
+        if member == self.user:  # Ignorer le bot lui-même
             return
             
         if before.channel == after.channel:
             return
             
-        # Rejoint un canal vocal
+        # User rejoint le vocal
         if after.channel and not before.channel:
             self.voice_join_time[member.id] = datetime.now()
-            print(f"🎧 {member.name} a rejoint {after.channel.name}")
+            print(f"🎧 {member.name} a rejoint le vocal")
             
-        # Quitte un canal vocal
+        # User quitte le vocal
         elif before.channel and not after.channel:
             if member.id in self.voice_join_time:
                 time_spent = datetime.now() - self.voice_join_time[member.id]
@@ -74,63 +194,47 @@ class VoiceTimeBot(discord.Client):
                 hours = int(total_seconds // 3600)
                 minutes = int((total_seconds % 3600) // 60)
                 
-                print(f"🚪 {member.name} a quitté après {time_spent}. Total: {hours}h {minutes}min")
+                print(f"🚪 {member.name} a quitté - Total: {hours}h {minutes}min")
                 del self.voice_join_time[member.id]
                 self.save_data()
 
-    async def on_ready(self):
-        """Quand le bot est prêt"""
-        print(f'✅ Bot connecté en tant que {self.user}')
-        print(f'👥 Sur {len(self.guilds)} serveur(s)')
-        print(f'📊 {len(self.user_voice_time)} utilisateurs suivis')
-        
-        # Mettre le statut
-        activity = discord.Activity(type=discord.ActivityType.watching, name="Je nahess ma Fwew 🎧")
-        await self.change_presence(activity=activity)
-        
-        # Tâche de sauvegarde automatique
-        self.loop.create_task(self.auto_save())
-
-    async def auto_save(self):
-        """Sauvegarde automatique toutes les 5 minutes"""
-        await self.wait_until_ready()
-        while not self.is_closed():
-            await asyncio.sleep(300)  # 5 minutes
-            self.save_data()
-
     async def on_message(self, message):
-        """Gère les commandes messages"""
+        """Gestion des commandes"""
         if message.author == self.user:
             return
 
         if message.content.startswith('!join'):
             await self.cmd_join(message)
-
         elif message.content.startswith('!leave'):
             await self.cmd_leave(message)
-
         elif message.content.startswith('!temps'):
             await self.cmd_temps(message)
-
         elif message.content.startswith('!classement'):
             await self.cmd_classement(message)
-            
+        elif message.content.startswith('!status'):
+            await self.cmd_status(message)
         elif message.content.startswith('!help'):
             await self.cmd_help(message)
 
     async def cmd_join(self, message):
-        """Commande !join - Faire rejoindre le bot en vocal"""
+        """Rejoindre le vocal de l'utilisateur"""
         if message.author.voice and message.author.voice.channel:
             channel = message.author.voice.channel
             try:
-                # Déconnecter si déjà connecté ailleurs
+                # Déconnecter si déjà connecté
                 if self.bot_voice_channel:
                     await self.bot_voice_channel.disconnect()
                 
-                # Rejoindre le canal
+                # Se reconnecter au nouveau salon
                 self.bot_voice_channel = await channel.connect()
-                await message.channel.send(f"🎧 Bot connecté dans **{channel.name}** et reste en permanence !")
-                print(f"🤖 Bot rejoint le vocal: {channel.name}")
+                self.target_channel_id = channel.id
+                self.last_connect_time = datetime.now()
+                
+                await message.channel.send(f"🎧 **CONNECTÉ À {channel.name.upper()}** 🤖")
+                await message.channel.send("**⭐ JE RESTE 24H/24 MAINTENANT !**")
+                await message.channel.send("**⏰ CUMUL D'HEURES ACTIVÉ !**")
+                
+                print(f"🤖 Rejoint {channel.name} sur commande")
                 
             except Exception as e:
                 await message.channel.send(f"❌ Erreur: {e}")
@@ -138,37 +242,38 @@ class VoiceTimeBot(discord.Client):
             await message.channel.send("❌ Vous devez être dans un salon vocal !")
 
     async def cmd_leave(self, message):
-        """Commande !leave - Faire quitter le bot du vocal"""
+        """Quitter le vocal (manuellement)"""
         if self.bot_voice_channel:
             await self.bot_voice_channel.disconnect()
             self.bot_voice_channel = None
-            await message.channel.send("🚪 Bot déconnecté du vocal")
-            print("🤖 Bot quitté du vocal")
+            self.target_channel_id = None
+            await message.channel.send("🚪 **DÉCONNECTÉ DU VOCAL**")
+            print("🤖 Déconnecté manuellement")
         else:
-            await message.channel.send("❌ Le bot n'est dans aucun vocal")
+            await message.channel.send("❌ Je ne suis dans aucun vocal")
 
     async def cmd_temps(self, message):
-        """Commande !temps"""
+        """Afficher le temps de l'utilisateur"""
         user_id = message.author.id
         if user_id in self.user_voice_time:
             total_seconds = self.user_voice_time[user_id].total_seconds()
             hours = int(total_seconds // 3600)
             minutes = int((total_seconds % 3600) // 60)
-            await message.channel.send(f"🎧 **{message.author.name}** - Temps vocal: **{hours}h {minutes}min**")
+            await message.channel.send(f"🎧 **{message.author.name}** - Temps total: **{hours}h {minutes}min**")
         else:
-            await message.channel.send(f"❌ **{message.author.name}**, aucun temps vocal enregistré")
+            await message.channel.send(f"❌ **{message.author.name}**, vous n'avez pas encore de temps enregistré")
 
     async def cmd_classement(self, message):
-        """Commande !classement"""
+        """Afficher le classement"""
         if not self.user_voice_time:
-            await message.channel.send("📊 Aucune donnée de classement disponible")
+            await message.channel.send("📊 Aucune donnée de temps enregistrée")
             return
             
         sorted_users = sorted(self.user_voice_time.items(), 
                             key=lambda x: x[1].total_seconds(), 
                             reverse=True)[:10]
         
-        classement = "🏆 **Classement des temps en vocal :**\n"
+        classement = "🏆 **CLASSEMENT TEMPS VOCAL 24/24:**\n"
         for i, (user_id, time_spent) in enumerate(sorted_users, 1):
             user = self.get_user(user_id)
             username = user.name if user else f"User{user_id}"
@@ -179,26 +284,60 @@ class VoiceTimeBot(discord.Client):
         
         await message.channel.send(classement)
 
-    async def cmd_help(self, message):
-        """Commande !help"""
-        help_text = """
-**🎧 Commandes du Bot Vocal:**
-`!join` - Faire rejoindre le bot dans votre vocal (reste en permanence)
-`!leave` - Faire quitter le bot du vocal
-`!temps` - Voir votre temps total en vocal
-`!classement` - Voir le top 10 des temps vocaux
-`!help` - Affiche ce message
+    async def cmd_status(self, message):
+        """Statut du bot"""
+        status_text = "**🤖 STATUT BOT VOCAL 24/24:**\n"
+        
+        if self.bot_voice_channel and self.bot_voice_channel.is_connected():
+            channel_name = self.bot_voice_channel.channel.name if self.bot_voice_channel.channel else "Inconnu"
+            status_text += f"✅ **CONNECTÉ** à: {channel_name}\n"
+            
+            if self.last_connect_time:
+                duration = datetime.now() - self.last_connect_time
+                hours = int(duration.total_seconds() // 3600)
+                minutes = int((duration.total_seconds() % 3600) // 60)
+                status_text += f"⏱️ **Depuis:** {hours}h {minutes}min\n"
+        else:
+            status_text += "❌ **DÉCONNECTÉ** (reconnexion auto...)\n"
+            
+        status_text += f"📊 **Utilisateurs trackés:** {len(self.user_voice_time)}\n"
+        status_text += "🔧 **Système:** Replit + UptimeRobot 24/24"
+        
+        await message.channel.send(status_text)
 
-💡 **Astuce:** Utilisez `!join` pour que le bot reste en vocal 24h/24 et fasse monter les heures !
+    async def cmd_help(self, message):
+        help_text = """
+**🎧 BOT VOCAL 24H/24 - COMMANDES:**
+
+`!join` - Je rejoins VOTRE vocal (reste 24h/24)
+`!leave` - Je quitte le vocal (manuellement)
+`!temps` - Voir VOTRE temps total
+`!classement` - Top 10 des temps vocaux
+`!status` - Voir mon statut actuel
+`!help` - Cette aide
+
+**🌟 FONCTIONNALITÉS:**
+• 🤖 Je reste **SEUL** dans le vocal 24h/24
+• ⏰ **Cumul automatique** d'heures
+• 🔁 **Reconnexion auto** si problème
+• 💾 **Sauvegarde auto** des données
+
+**🚀 CONFIGURÉ POUR DURER À VIE !**
         """
         await message.channel.send(help_text)
 
-# Lancer le bot
-if __name__ == "__main__":
+# ================= LANCEMENT DU BOT =================
+print("=" * 50)
+print("🚀 DÉMARRAGE BOT VOCAL 24/24/365")
+print("🤖 Conçu pour durer À VIE")
+print("🎧 Reste dans le vocal 24h/24")
+print("⏰ Cumule des heures automatiquement")
+print("=" * 50)
+
+token = os.environ.get("DISCORD_TOKEN")
+if token:
     bot = VoiceTimeBot()
-    token = os.environ.get('DISCORD_TOKEN')
-    if not token:
-        print("❌ ERREUR: DISCORD_TOKEN non trouvé!")
-        print("💡 Assurez-vous de l'avoir configuré dans Railway")
-    else:
-        bot.run(token)
+    bot.run(token)
+else:
+    print("❌ ERREUR: DISCORD_TOKEN non trouvé!")
+    print("💡 Configurez-le dans les Secrets de Replit")
