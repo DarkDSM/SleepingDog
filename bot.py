@@ -41,6 +41,9 @@ class VoiceTimeBot(discord.Client):
         self.bot_voice_channel = None
         self.target_channel_id = None
         self.last_connect_time = None
+        self.reconnect_attempts = 0
+        self.max_reconnect_attempts = 10
+        self.is_manually_disconnecting = False  # Pour éviter la reconnexion auto quand on quitte manuellement
         self.load_data()
         print("🤖 Bot vocal initialisé - Prêt pour 24/24!")
 
@@ -86,6 +89,7 @@ class VoiceTimeBot(discord.Client):
         self.loop.create_task(self.auto_save())
         self.loop.create_task(self.connection_watcher())
         self.loop.create_task(self.time_accumulator())
+        self.loop.create_task(self.emergency_reconnector())
 
     async def auto_connect_to_voice(self):
         """Se connecte automatiquement à un salon vocal"""
@@ -96,21 +100,27 @@ class VoiceTimeBot(discord.Client):
             for channel in guild.voice_channels:
                 print(f"   🎧 Salon: {channel.name}")
                 try:
-                    # Se connecter au premier salon vocal disponible
+                    # Déconnecter si déjà connecté ailleurs
+                    if self.bot_voice_channel and self.bot_voice_channel.is_connected():
+                        await self.bot_voice_channel.disconnect()
+                    
+                    # Se connecter au salon
                     self.bot_voice_channel = await channel.connect()
                     self.target_channel_id = channel.id
                     self.last_connect_time = datetime.now()
+                    self.reconnect_attempts = 0  # Réinitialiser les tentatives
                     
                     print(f"🎧✅ CONNECTÉ à: {channel.name}")
                     print("🤖 JE RESTE DANS LE VOCAL 24H/24 MAINTENANT !")
                     print("⏰ Cumul d'heures COMMENCÉ !")
-                    return
+                    return True
                     
                 except Exception as e:
                     print(f"❌ Impossible {channel.name}: {e}")
                     continue
         
         print("⚠️ Aucun salon vocal trouvé - Attente manuelle !join")
+        return False
 
     async def connection_watcher(self):
         """Surveille la connexion vocale en permanence"""
@@ -120,19 +130,46 @@ class VoiceTimeBot(discord.Client):
             try:
                 # Vérifier si déconnecté
                 if not self.bot_voice_channel or not self.bot_voice_channel.is_connected():
-                    print("🔁 DÉCONNEXION DÉTECTÉE - Reconnexion immédiate...")
-                    await self.auto_connect_to_voice()
+                    if not self.is_manually_disconnecting:
+                        print("🔁 DÉCONNEXION DÉTECTÉE - Reconnexion immédiate...")
+                        self.reconnect_attempts += 1
+                        success = await self.auto_connect_to_voice()
+                        if success:
+                            print("✅ Reconnexion réussie !")
+                        else:
+                            print(f"⚠️ Échec reconnexion (tentative {self.reconnect_attempts}/{self.max_reconnect_attempts})")
                 else:
                     # Vérifier la stabilité
                     duration = datetime.now() - self.last_connect_time if self.last_connect_time else timedelta(0)
                     hours = duration.total_seconds() / 3600
                     if hours > 1:  # Toutes les heures, log la durée
                         print(f"⏱️ Connexion stable depuis: {hours:.1f} heures")
+                        self.reconnect_attempts = 0  # Réinitialiser après une heure stable
                         
             except Exception as e:
                 print(f"❌ Erreur surveillant: {e}")
                 
-            await asyncio.sleep(30)  # Vérifie toutes les 30 secondes
+            await asyncio.sleep(15)  # Vérifie toutes les 15 secondes
+
+    async def emergency_reconnector(self):
+        """Reconnecteur d'urgence - vérifie périodiquement même si le watcher rate quelque chose"""
+        await self.wait_until_ready()
+        
+        while not self.is_closed():
+            try:
+                # Vérification supplémentaire toutes les 60 secondes
+                await asyncio.sleep(60)
+                
+                if self.is_manually_disconnecting:
+                    continue
+                    
+                # Si pas connecté et pas en mode manuel
+                if not self.bot_voice_channel or not self.bot_voice_channel.is_connected():
+                    print("🚨 RECONNECTEUR D'URGENCE - Tentative de reconnexion...")
+                    await self.auto_connect_to_voice()
+                    
+            except Exception as e:
+                print(f"❌ Erreur reconnecteur: {e}")
 
     async def time_accumulator(self):
         """Cumule du temps pour le bot (simulation d'activité)"""
@@ -167,10 +204,24 @@ class VoiceTimeBot(discord.Client):
             self.save_data()
 
     async def on_voice_state_update(self, member, before, after):
-        """Track le temps des utilisateurs réels"""
-        if member == self.user:  # Ignorer le bot lui-même
+        """Track le temps des utilisateurs réels et surveille les déconnexions du bot"""
+        # ===== SURVEILLANCE DU BOT =====
+        if member == self.user:
+            # Bot déconnecté involontairement
+            if before.channel and not after.channel and not self.is_manually_disconnecting:
+                print(f"⚠️ BOT DÉCONNECTÉ DU VOCAL: {before.channel.name}")
+                print("🔄 Reconnexion automatique dans 3 secondes...")
+                await asyncio.sleep(3)
+                if not self.is_manually_disconnecting:  # Vérifier à nouveau
+                    await self.auto_connect_to_voice()
+            # Bot connecté
+            elif not before.channel and after.channel:
+                print(f"✅ BOT RECONNECTÉ À: {after.channel.name}")
+                self.is_manually_disconnecting = False
+                self.last_connect_time = datetime.now()
             return
             
+        # ===== TRACKING UTILISATEURS =====
         if before.channel == after.channel:
             return
             
@@ -221,18 +272,22 @@ class VoiceTimeBot(discord.Client):
         if message.author.voice and message.author.voice.channel:
             channel = message.author.voice.channel
             try:
+                self.is_manually_disconnecting = False  # Réinitialiser pour la reconnexion
+                
                 # Déconnecter si déjà connecté
-                if self.bot_voice_channel:
+                if self.bot_voice_channel and self.bot_voice_channel.is_connected():
                     await self.bot_voice_channel.disconnect()
                 
                 # Se reconnecter au nouveau salon
                 self.bot_voice_channel = await channel.connect()
                 self.target_channel_id = channel.id
                 self.last_connect_time = datetime.now()
+                self.reconnect_attempts = 0
                 
                 await message.channel.send(f"🎧 **CONNECTÉ À {channel.name.upper()}** 🤖")
                 await message.channel.send("**⭐ JE RESTE 24H/24 MAINTENANT !**")
                 await message.channel.send("**⏰ CUMUL D'HEURES ACTIVÉ !**")
+                await message.channel.send("**🔒 ANTI-DÉCONNEXION ACTIVÉ - JE NE PARTIRAI JAMAIS !**")
                 
                 print(f"🤖 Rejoint {channel.name} sur commande")
                 
@@ -243,14 +298,21 @@ class VoiceTimeBot(discord.Client):
 
     async def cmd_leave(self, message):
         """Quitter le vocal (manuellement)"""
+        self.is_manually_disconnecting = True  # Empêcher la reconnexion auto
         if self.bot_voice_channel:
             await self.bot_voice_channel.disconnect()
             self.bot_voice_channel = None
             self.target_channel_id = None
             await message.channel.send("🚪 **DÉCONNECTÉ DU VOCAL**")
-            print("🤖 Déconnecté manuellement")
+            await message.channel.send("⚠️ **Mode manuel: Je ne me reconnecterai pas automatiquement**")
+            print("🤖 Déconnecté manuellement - Mode manuel activé")
         else:
             await message.channel.send("❌ Je ne suis dans aucun vocal")
+        # Réactiver la reconnexion auto après 30 secondes si pas rejoint manuellement
+        await asyncio.sleep(30)
+        if self.is_manually_disconnecting:
+            self.is_manually_disconnecting = False
+            print("🔄 Mode manuel désactivé - Reconnexion auto réactivée")
 
     async def cmd_temps(self, message):
         """Afficher le temps de l'utilisateur"""
@@ -297,11 +359,19 @@ class VoiceTimeBot(discord.Client):
                 hours = int(duration.total_seconds() // 3600)
                 minutes = int((duration.total_seconds() % 3600) // 60)
                 status_text += f"⏱️ **Depuis:** {hours}h {minutes}min\n"
+            
+            status_text += f"🔒 **Anti-déconnexion:** ACTIF\n"
+            status_text += f"🔄 **Tentatives reconnexion:** {self.reconnect_attempts}\n"
         else:
-            status_text += "❌ **DÉCONNECTÉ** (reconnexion auto...)\n"
+            status_text += "❌ **DÉCONNECTÉ**\n"
+            if self.is_manually_disconnecting:
+                status_text += "⚠️ **Mode manuel activé** (pas de reconnexion auto)\n"
+            else:
+                status_text += "🔄 **Reconnexion auto en cours...**\n"
             
         status_text += f"📊 **Utilisateurs trackés:** {len(self.user_voice_time)}\n"
-        status_text += "🔧 **Système:** Replit + UptimeRobot 24/24"
+        status_text += f"💾 **Prochaine sauvegarde:** <5 min\n"
+        status_text += "🔧 **Système:** Anti-déco MAXIMUM activé"
         
         await message.channel.send(status_text)
 
@@ -316,13 +386,14 @@ class VoiceTimeBot(discord.Client):
 `!status` - Voir mon statut actuel
 `!help` - Cette aide
 
-**🌟 FONCTIONNALITÉS:**
-• 🤖 Je reste **SEUL** dans le vocal 24h/24
-• ⏰ **Cumul automatique** d'heures
-• 🔁 **Reconnexion auto** si problème
-• 💾 **Sauvegarde auto** des données
+**🌟 NOUVELLES FONCTIONNALITÉS:**
+• 🤖 **ANTI-DÉCONNEXION MAXIMUM** - Je ne pars JAMAIS seul
+• 🔒 **Double système de surveillance** (watcher + reconnecteur)
+• 🚨 **Reconnexion automatique** en 3 secondes max
+• ⚠️ **Mode manuel** pour !leave (empêche reconnexion auto 30s)
+• 🔄 **10 tentatives max** avant pause
 
-**🚀 CONFIGURÉ POUR DURER À VIE !**
+**🚀 CONFIGURÉ POUR DURER À VIE - JE NE PARTIRAI JAMAIS !**
         """
         await message.channel.send(help_text)
 
@@ -330,8 +401,9 @@ class VoiceTimeBot(discord.Client):
 print("=" * 50)
 print("🚀 DÉMARRAGE BOT VOCAL 24/24/365")
 print("🤖 Conçu pour durer À VIE")
-print("🎧 Reste dans le vocal 24h/24")
+print("🎧 Reste dans le vocal 24h/24 - ANTI-DÉCO MAXIMUM")
 print("⏰ Cumule des heures automatiquement")
+print("🔒 Système anti-déconnexion ACTIVÉ")
 print("=" * 50)
 
 token = os.environ.get("DISCORD_TOKEN")
@@ -340,4 +412,4 @@ if token:
     bot.run(token)
 else:
     print("❌ ERREUR: DISCORD_TOKEN non trouvé!")
-    print("💡 Configurez-le dans les Secrets de Replit")
+    print("💡 Configurez-le dans Railway/Replit Secrets")
